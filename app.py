@@ -62,7 +62,10 @@ def vpk_entries(vpk_dir: Path) -> list[str]:
 	signature, version, tree_size = struct.unpack_from("<III", data, 0)
 	if signature != 0x55AA1234 or version not in {1, 2}:
 		raise BakeError("Not a supported VPK directory file.")
-	tree = data[12:12 + tree_size]
+	header_size = 28 if version == 2 else 12
+	if len(data) < header_size + tree_size:
+		raise BakeError("VPK directory tree is incomplete.")
+	tree = data[header_size:header_size + tree_size]
 	offset = 0
 	entries = []
 
@@ -289,7 +292,7 @@ def self_test() -> None:
 			b"\0" +
 			b"\0"
 		)
-		vpk.write_bytes(struct.pack("<III", 0x55AA1234, 2, len(tree)) + tree)
+		vpk.write_bytes(struct.pack("<IIIIIII", 0x55AA1234, 2, len(tree), 0, 0, 0, 0) + tree)
 		assert detect_maps(vpk) == ["de_test"]
 
 

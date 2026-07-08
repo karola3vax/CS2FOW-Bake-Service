@@ -1,6 +1,7 @@
 import argparse
 import html
 import http.server
+import json
 import os
 import re
 import shutil
@@ -12,6 +13,7 @@ import time
 import uuid
 import zipfile
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import parse_qs, urlparse
 
 
@@ -31,6 +33,21 @@ JOB_LOCK = threading.Lock()
 
 class BakeError(RuntimeError):
 	pass
+
+
+class VpkEntry(NamedTuple):
+	path: str
+	crc32: int
+	archive_index: int
+	offset: int
+	size: int
+	preload: bytes
+
+
+class PreparedMap(NamedTuple):
+	name: str
+	vpk: Path
+	nested_entry: VpkEntry | None
 
 
 def extract_workshop_id(value: str) -> str:
@@ -55,7 +72,7 @@ def read_cstring(data: bytes, offset: int) -> tuple[str, int]:
 	return data[offset:end].decode("utf-8", errors="replace"), end + 1
 
 
-def vpk_entries(vpk_dir: Path) -> list[str]:
+def read_vpk_entries(vpk_dir: Path) -> list[VpkEntry]:
 	data = vpk_dir.read_bytes()
 	if len(data) < 12:
 		raise BakeError("VPK directory is too small.")
@@ -83,15 +100,106 @@ def vpk_entries(vpk_dir: Path) -> list[str]:
 					break
 				if offset + 18 > len(tree):
 					raise BakeError("Invalid VPK entry metadata.")
-				preload_size = struct.unpack_from("<H", tree, offset + 4)[0]
-				offset += 18 + preload_size
+				crc32, preload_size, archive_index, entry_offset, entry_size, _terminator = struct.unpack_from("<IHHIIH", tree, offset)
+				offset += 18
+				preload = tree[offset:offset + preload_size]
+				offset += preload_size
 				if offset > len(tree):
 					raise BakeError("Invalid VPK preload data.")
 				if extension:
 					entry = f"{directory}/{name}.{extension}"
 				else:
 					entry = f"{directory}/{name}"
-				entries.append(entry.replace("\\", "/").lower())
+				entries.append(VpkEntry(entry.replace("\\", "/").lower(), crc32, archive_index, entry_offset, entry_size, preload))
+
+
+def vpk_entries(vpk_dir: Path) -> list[str]:
+	return [entry.path for entry in read_vpk_entries(vpk_dir)]
+
+
+def vpk_archive_path(vpk_dir: Path, archive_index: int) -> Path:
+	if archive_index == 0x7fff:
+		return vpk_dir
+	if not vpk_dir.name.endswith("_dir.vpk"):
+		raise BakeError("Multipart VPK entry found, but the directory file is not named *_dir.vpk.")
+	return vpk_dir.with_name(f"{vpk_dir.name[:-8]}_{archive_index:03d}.vpk")
+
+
+def vpk_embedded_data_offset(vpk_dir: Path) -> int:
+	data = vpk_dir.read_bytes()
+	if len(data) < 12:
+		raise BakeError("VPK directory is too small.")
+	signature, version, tree_size = struct.unpack_from("<III", data, 0)
+	if signature != 0x55AA1234 or version not in {1, 2}:
+		raise BakeError("Not a supported VPK directory file.")
+	return (28 if version == 2 else 12) + tree_size
+
+
+def extract_vpk_entry(vpk_dir: Path, entry_path: str, output: Path) -> None:
+	target = entry_path.replace("\\", "/").lower()
+	entry = next((candidate for candidate in read_vpk_entries(vpk_dir) if candidate.path == target), None)
+	if entry is None:
+		raise BakeError(f"VPK entry not found: {entry_path}")
+
+	output.parent.mkdir(parents=True, exist_ok=True)
+	with output.open("wb") as destination:
+		destination.write(entry.preload)
+		if entry.size == 0:
+			return
+
+		archive = vpk_archive_path(vpk_dir, entry.archive_index)
+		start = entry.offset + (vpk_embedded_data_offset(vpk_dir) if entry.archive_index == 0x7fff else 0)
+		with archive.open("rb") as source:
+			source.seek(start)
+			remaining = entry.size
+			while remaining > 0:
+				chunk = source.read(min(1024 * 1024, remaining))
+				if not chunk:
+					raise BakeError(f"VPK entry is truncated: {entry_path}")
+				destination.write(chunk)
+				remaining -= len(chunk)
+
+
+def prepare_map_sources(vpk_dir: Path, output_dir: Path) -> list[PreparedMap]:
+	nested = {}
+	direct = set()
+	for entry in read_vpk_entries(vpk_dir):
+		if entry.path.startswith("maps/") and entry.path.endswith(".vpk") and "/" not in entry.path[5:-4]:
+			nested[Path(entry.path).stem] = entry
+		elif entry.path.startswith("maps/") and entry.path.endswith("/world_physics.vmdl_c"):
+			parts = entry.path.split("/")
+			if len(parts) >= 3:
+				direct.add(parts[1])
+
+	sources = []
+	for map_name, entry in sorted(nested.items()):
+		entry_path = entry.path
+		output = output_dir / entry_path
+		extract_vpk_entry(vpk_dir, entry_path, output)
+		sources.append(PreparedMap(map_name, output, entry))
+	for map_name in sorted(direct - nested.keys()):
+		sources.append(PreparedMap(map_name, vpk_dir, None))
+
+	if not sources:
+		raise BakeError("No nested maps/*.vpk or world_physics.vmdl_c found in this Workshop item.")
+	return sources
+
+
+def patch_nested_source_metadata(bvh8: Path, report: Path, entry: VpkEntry) -> None:
+	with bvh8.open("r+b") as stream:
+		header = stream.read(32)
+		if len(header) < 32 or header[:8] != b"CS2FOW8\0":
+			raise BakeError("Baker wrote an invalid BVH8 header.")
+		stream.seek(16)
+		stream.write(struct.pack("<IIQ", 1, entry.crc32, entry.size))
+
+	if report.is_file():
+		data = json.loads(report.read_text(encoding="utf-8"))
+		data["source_kind"] = "nested_map_vpk"
+		data["source_entry"] = entry.path
+		data["source_crc32"] = f"0x{entry.crc32:08x}"
+		data["source_size"] = entry.size
+		report.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
 def detect_maps(vpk_dir: Path) -> list[str]:
@@ -154,16 +262,19 @@ def bake(workshop_value: str) -> tuple[str, str | None]:
 
 			baked = []
 			for vpk in vpks:
-				for map_name in detect_maps(vpk):
-					output = out_root / f"{map_name}.bvh8"
+				for source in prepare_map_sources(vpk, root / "nested"):
+					output = out_root / f"{source.name}.bvh8"
 					log = run_command([
 						str(BAKER),
 						"--game", str(root / "empty-game"),
-						"--map", map_name,
-						"--vpk", str(vpk),
+						"--map", source.name,
+						"--vpk", str(source.vpk),
 						"--vrf", str(VRF),
 						"--output", str(output),
 					], root, BAKER_TIMEOUT_SECONDS)
+					if source.nested_entry is not None:
+						patch_nested_source_metadata(output, output.with_suffix(".json"), source.nested_entry)
+						log = log.strip() + f"\n{source.name}: nested source crc=0x{source.nested_entry.crc32:08x} preserved"
 					baked.append(log.strip())
 
 			with zipfile.ZipFile(result_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
@@ -294,6 +405,22 @@ def self_test() -> None:
 		)
 		vpk.write_bytes(struct.pack("<IIIIIII", 0x55AA1234, 2, len(tree), 0, 0, 0, 0) + tree)
 		assert detect_maps(vpk) == ["de_test"]
+
+		archive = Path(temporary) / "outer_000.vpk"
+		payload = b"nested-vpk"
+		outer = Path(temporary) / "outer_dir.vpk"
+		tree = (
+			b"vpk\0maps\0de_test\0" + struct.pack("<IHHIIH", 0, 0, 0, 0, len(payload), 0xffff) +
+			b"\0" +
+			b"\0" +
+			b"\0"
+		)
+		outer.write_bytes(struct.pack("<IIIIIII", 0x55AA1234, 2, len(tree), 0, 0, 0, 0) + tree)
+		archive.write_bytes(payload)
+		sources = prepare_map_sources(outer, Path(temporary) / "nested")
+		assert sources[0].name == "de_test"
+		assert sources[0].vpk.read_bytes() == payload
+		assert sources[0].nested_entry and sources[0].nested_entry.size == len(payload)
 
 
 def main() -> None:

@@ -17,8 +17,6 @@ RUN dpkg --add-architecture i386 \
 		zip \
 	&& rm -rf /var/lib/apt/lists/*
 
-RUN pip install gradio==4.44.1
-
 RUN mkdir -p /opt/steamcmd /opt/cs2fow \
 	&& curl -fsSL https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz | tar -xz -C /opt/steamcmd
 

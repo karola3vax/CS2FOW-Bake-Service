@@ -1,4 +1,6 @@
 import argparse
+import html
+import http.server
 import os
 import re
 import shutil
@@ -169,13 +171,94 @@ def bake(workshop_value: str) -> tuple[str, str | None]:
 		return "Done.\n\n" + "\n".join(baked), str(result_zip)
 
 
-def ui_bake(workshop_value: str) -> tuple[str, str | None]:
-	try:
-		return bake(workshop_value)
-	except subprocess.TimeoutExpired:
-		return "Bake timed out. Try a smaller map or use a local baker.", None
-	except Exception as error:
-		return f"Failed: {error}", None
+def page(body: str) -> bytes:
+	return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CS2FOW Bake Service</title>
+<style>
+body {{ max-width: 760px; margin: 48px auto; padding: 0 18px; font: 16px system-ui, sans-serif; background: #0b0e12; color: #e8eef7; }}
+input, button {{ font: inherit; padding: 10px; border-radius: 6px; border: 1px solid #3a4656; background: #151b23; color: #e8eef7; }}
+input {{ width: 100%; box-sizing: border-box; }}
+button {{ margin-top: 12px; cursor: pointer; }}
+pre {{ white-space: pre-wrap; background: #151b23; padding: 12px; border-radius: 6px; overflow: auto; }}
+a {{ color: #7ee787; }}
+</style>
+</head>
+<body>
+<h1>CS2FOW Bake Service</h1>
+<p>Paste a CS2 Workshop map link or item ID. Output contains only CS2FOW <code>.bvh8</code> and <code>.json</code> bake data.</p>
+{body}
+</body>
+</html>""".encode()
+
+
+def home(message: str = "", download: str = "") -> bytes:
+	result = f"<pre>{html.escape(message)}</pre>" if message else ""
+	link = f'<p><a href="/download/{html.escape(download)}">Download zip</a></p>' if download else ""
+	return page(f"""
+<form method="post" action="/bake">
+<input name="workshop" placeholder="https://steamcommunity.com/sharedfiles/filedetails/?id=3349182536" required>
+<button type="submit">Bake</button>
+</form>
+{result}
+{link}
+""")
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+	def send_html(self, content: bytes, status: int = 200) -> None:
+		self.send_response(status)
+		self.send_header("Content-Type", "text/html; charset=utf-8")
+		self.send_header("Content-Length", str(len(content)))
+		self.end_headers()
+		self.wfile.write(content)
+
+	def do_GET(self) -> None:
+		if self.path == "/":
+			self.send_html(home())
+			return
+		if self.path.startswith("/download/"):
+			name = self.path.removeprefix("/download/")
+			if "/" in name or "\\" in name or not name.endswith(".zip"):
+				self.send_error(404)
+				return
+			path = RESULTS / name
+			if not path.is_file():
+				self.send_error(404)
+				return
+			self.send_response(200)
+			self.send_header("Content-Type", "application/zip")
+			self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+			self.send_header("Content-Length", str(path.stat().st_size))
+			self.end_headers()
+			with path.open("rb") as stream:
+				shutil.copyfileobj(stream, self.wfile)
+			return
+		self.send_error(404)
+
+	def do_POST(self) -> None:
+		if self.path != "/bake":
+			self.send_error(404)
+			return
+		length = int(self.headers.get("Content-Length", "0"))
+		if length > 2048:
+			self.send_error(413)
+			return
+		fields = parse_qs(self.rfile.read(length).decode("utf-8", errors="replace"))
+		workshop = fields.get("workshop", [""])[0]
+		try:
+			message, zip_path = bake(workshop)
+			self.send_html(home(message, Path(zip_path).name if zip_path else ""))
+		except subprocess.TimeoutExpired:
+			self.send_html(home("Bake timed out. Try a smaller map or use a local baker."), 500)
+		except Exception as error:
+			self.send_html(home(f"Failed: {error}"), 500)
+
+	def log_message(self, fmt: str, *args) -> None:
+		print(fmt % args, flush=True)
 
 
 def self_test() -> None:
@@ -200,16 +283,10 @@ def self_test() -> None:
 
 
 def main() -> None:
-	import gradio as gr
-
-	with gr.Blocks(title="CS2FOW Bake Service") as app:
-		gr.Markdown("# CS2FOW Bake Service\nPaste a CS2 Workshop map link or item ID. The output zip contains only CS2FOW `.bvh8` and `.json` bake data.")
-		workshop = gr.Textbox(label="Workshop link or ID", placeholder="https://steamcommunity.com/sharedfiles/filedetails/?id=3349182536")
-		button = gr.Button("Bake")
-		status = gr.Textbox(label="Status", lines=8)
-		download = gr.File(label="Download zip")
-		button.click(ui_bake, inputs=workshop, outputs=[status, download])
-	app.queue(default_concurrency_limit=1).launch(server_name="0.0.0.0", server_port=7860)
+	RESULTS.mkdir(parents=True, exist_ok=True)
+	server = http.server.ThreadingHTTPServer(("0.0.0.0", 7860), Handler)
+	print("CS2FOW bake service listening on 0.0.0.0:7860", flush=True)
+	server.serve_forever()
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ RUN dpkg --add-architecture i386 \
 		curl \
 		lib32gcc-s1 \
 		lib32stdc++6 \
+		libicu72 \
 		libstdc++6 \
 		unzip \
 		zip \

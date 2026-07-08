@@ -199,7 +199,7 @@ def home(message: str = "", download: str = "") -> bytes:
 	result = f"<pre>{html.escape(message)}</pre>" if message else ""
 	link = f'<p><a href="/download/{html.escape(download)}">Download zip</a></p>' if download else ""
 	return page(f"""
-<form method="post" action="/bake">
+<form method="post" action="/">
 <input name="workshop" placeholder="https://steamcommunity.com/sharedfiles/filedetails/?id=3349182536" required>
 <button type="submit">Bake</button>
 </form>
@@ -217,11 +217,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
 		self.wfile.write(content)
 
 	def do_GET(self) -> None:
-		if self.path == "/":
+		path = urlparse(self.path).path
+		if path in ("/", "/bake"):
 			self.send_html(home())
 			return
-		if self.path.startswith("/download/"):
-			name = self.path.removeprefix("/download/")
+		if path.startswith("/download/"):
+			name = path.removeprefix("/download/")
 			if "/" in name or "\\" in name or not name.endswith(".zip"):
 				self.send_error(404)
 				return
@@ -239,8 +240,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
 			return
 		self.send_error(404)
 
+	def do_HEAD(self) -> None:
+		path = urlparse(self.path).path
+		if path in ("/", "/bake"):
+			self.send_response(200)
+			self.send_header("Content-Type", "text/html; charset=utf-8")
+			self.end_headers()
+			return
+		self.send_error(404)
+
 	def do_POST(self) -> None:
-		if self.path != "/bake":
+		path = urlparse(self.path).path
+		if path not in ("/", "/bake"):
 			self.send_error(404)
 			return
 		length = int(self.headers.get("Content-Length", "0"))

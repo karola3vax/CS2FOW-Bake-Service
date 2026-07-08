@@ -284,8 +284,9 @@ def self_test() -> None:
 
 def main() -> None:
 	RESULTS.mkdir(parents=True, exist_ok=True)
-	server = http.server.ThreadingHTTPServer(("0.0.0.0", 7860), Handler)
-	print("CS2FOW bake service listening on 0.0.0.0:7860", flush=True)
+	port = int(os.environ.get("PORT", "7860"))
+	server = http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler)
+	print(f"CS2FOW bake service listening on 0.0.0.0:{port}", flush=True)
 	server.serve_forever()
 
 

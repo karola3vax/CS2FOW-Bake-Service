@@ -1,441 +1,191 @@
-import argparse
+"""Small HTTP front end for the CS2FOW Workshop baker."""
+
+from __future__ import annotations
+
 import html
 import http.server
-import json
 import os
 import re
 import shutil
-import struct
-import subprocess
-import tempfile
-import threading
-import time
-import uuid
-import zipfile
 from pathlib import Path
-from typing import NamedTuple
 from urllib.parse import parse_qs, urlparse
 
-
-APP_ID = "730"
-BAKER_TIMEOUT_SECONDS = 600
-RESULT_TTL_SECONDS = 7200
-WORKSHOP_ID_RE = re.compile(r"^[0-9]{6,20}$")
-
-STEAMCMD = Path(os.environ.get("STEAMCMD", "/opt/steamcmd/steamcmd.sh"))
-CS2FOW_ROOT = Path(os.environ.get("CS2FOW_ROOT", "/opt/cs2fow"))
-BAKER = CS2FOW_ROOT / "tools" / "cs2fow_baker"
-VRF = CS2FOW_ROOT / "tools" / "vrf" / "linux64" / "Source2Viewer-CLI"
-RESULTS = Path(os.environ.get("RESULTS_DIR", "/tmp/cs2fow_results"))
-
-JOB_LOCK = threading.Lock()
+from bake import BakeError, BakeManager, Job, QueueFull
 
 
-class BakeError(RuntimeError):
-	pass
+JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+DOWNLOAD_RE = re.compile(r"^cs2fow-[0-9]{6,20}-[0-9a-f]{32}\.zip$")
+MAX_FORM_BYTES = 2048
 
 
-class VpkEntry(NamedTuple):
-	path: str
-	crc32: int
-	archive_index: int
-	offset: int
-	size: int
-	preload: bytes
-
-
-class PreparedMap(NamedTuple):
-	name: str
-	vpk: Path
-	nested_entry: VpkEntry | None
-
-
-def extract_workshop_id(value: str) -> str:
-	text = value.strip()
-	if WORKSHOP_ID_RE.fullmatch(text):
-		return text
-
-	parsed = urlparse(text)
-	if parsed.scheme not in {"http", "https"} or parsed.hostname not in {"steamcommunity.com", "www.steamcommunity.com"}:
-		raise BakeError("Paste a Steam Workshop URL or numeric Workshop item ID.")
-
-	item_id = parse_qs(parsed.query).get("id", [""])[0]
-	if not WORKSHOP_ID_RE.fullmatch(item_id):
-		raise BakeError("Workshop URL does not contain a valid ?id= number.")
-	return item_id
-
-
-def read_cstring(data: bytes, offset: int) -> tuple[str, int]:
-	end = data.find(b"\0", offset)
-	if end < 0:
-		raise BakeError("Invalid VPK directory tree.")
-	return data[offset:end].decode("utf-8", errors="replace"), end + 1
-
-
-def read_vpk_entries(vpk_dir: Path) -> list[VpkEntry]:
-	data = vpk_dir.read_bytes()
-	if len(data) < 12:
-		raise BakeError("VPK directory is too small.")
-	signature, version, tree_size = struct.unpack_from("<III", data, 0)
-	if signature != 0x55AA1234 or version not in {1, 2}:
-		raise BakeError("Not a supported VPK directory file.")
-	header_size = 28 if version == 2 else 12
-	if len(data) < header_size + tree_size:
-		raise BakeError("VPK directory tree is incomplete.")
-	tree = data[header_size:header_size + tree_size]
-	offset = 0
-	entries = []
-
-	while True:
-		extension, offset = read_cstring(tree, offset)
-		if not extension:
-			return entries
-		while True:
-			directory, offset = read_cstring(tree, offset)
-			if not directory:
-				break
-			while True:
-				name, offset = read_cstring(tree, offset)
-				if not name:
-					break
-				if offset + 18 > len(tree):
-					raise BakeError("Invalid VPK entry metadata.")
-				crc32, preload_size, archive_index, entry_offset, entry_size, _terminator = struct.unpack_from("<IHHIIH", tree, offset)
-				offset += 18
-				preload = tree[offset:offset + preload_size]
-				offset += preload_size
-				if offset > len(tree):
-					raise BakeError("Invalid VPK preload data.")
-				if extension:
-					entry = f"{directory}/{name}.{extension}"
-				else:
-					entry = f"{directory}/{name}"
-				entries.append(VpkEntry(entry.replace("\\", "/").lower(), crc32, archive_index, entry_offset, entry_size, preload))
-
-
-def vpk_entries(vpk_dir: Path) -> list[str]:
-	return [entry.path for entry in read_vpk_entries(vpk_dir)]
-
-
-def vpk_archive_path(vpk_dir: Path, archive_index: int) -> Path:
-	if archive_index == 0x7fff:
-		return vpk_dir
-	if not vpk_dir.name.endswith("_dir.vpk"):
-		raise BakeError("Multipart VPK entry found, but the directory file is not named *_dir.vpk.")
-	return vpk_dir.with_name(f"{vpk_dir.name[:-8]}_{archive_index:03d}.vpk")
-
-
-def vpk_embedded_data_offset(vpk_dir: Path) -> int:
-	data = vpk_dir.read_bytes()
-	if len(data) < 12:
-		raise BakeError("VPK directory is too small.")
-	signature, version, tree_size = struct.unpack_from("<III", data, 0)
-	if signature != 0x55AA1234 or version not in {1, 2}:
-		raise BakeError("Not a supported VPK directory file.")
-	return (28 if version == 2 else 12) + tree_size
-
-
-def extract_vpk_entry(vpk_dir: Path, entry_path: str, output: Path) -> None:
-	target = entry_path.replace("\\", "/").lower()
-	entry = next((candidate for candidate in read_vpk_entries(vpk_dir) if candidate.path == target), None)
-	if entry is None:
-		raise BakeError(f"VPK entry not found: {entry_path}")
-
-	output.parent.mkdir(parents=True, exist_ok=True)
-	with output.open("wb") as destination:
-		destination.write(entry.preload)
-		if entry.size == 0:
-			return
-
-		archive = vpk_archive_path(vpk_dir, entry.archive_index)
-		start = entry.offset + (vpk_embedded_data_offset(vpk_dir) if entry.archive_index == 0x7fff else 0)
-		with archive.open("rb") as source:
-			source.seek(start)
-			remaining = entry.size
-			while remaining > 0:
-				chunk = source.read(min(1024 * 1024, remaining))
-				if not chunk:
-					raise BakeError(f"VPK entry is truncated: {entry_path}")
-				destination.write(chunk)
-				remaining -= len(chunk)
-
-
-def prepare_map_sources(vpk_dir: Path, output_dir: Path) -> list[PreparedMap]:
-	nested = {}
-	direct = set()
-	for entry in read_vpk_entries(vpk_dir):
-		if entry.path.startswith("maps/") and entry.path.endswith(".vpk") and "/" not in entry.path[5:-4]:
-			nested[Path(entry.path).stem] = entry
-		elif entry.path.startswith("maps/") and entry.path.endswith("/world_physics.vmdl_c"):
-			parts = entry.path.split("/")
-			if len(parts) >= 3:
-				direct.add(parts[1])
-
-	sources = []
-	for map_name, entry in sorted(nested.items()):
-		entry_path = entry.path
-		output = output_dir / entry_path
-		extract_vpk_entry(vpk_dir, entry_path, output)
-		sources.append(PreparedMap(map_name, output, entry))
-	for map_name in sorted(direct - nested.keys()):
-		sources.append(PreparedMap(map_name, vpk_dir, None))
-
-	if not sources:
-		raise BakeError("No nested maps/*.vpk or world_physics.vmdl_c found in this Workshop item.")
-	return sources
-
-
-def patch_nested_source_metadata(bvh8: Path, report: Path, entry: VpkEntry) -> None:
-	with bvh8.open("r+b") as stream:
-		header = stream.read(32)
-		if len(header) < 32 or header[:8] != b"CS2FOW8\0":
-			raise BakeError("Baker wrote an invalid BVH8 header.")
-		stream.seek(16)
-		stream.write(struct.pack("<IIQ", 1, entry.crc32, entry.size))
-
-	if report.is_file():
-		data = json.loads(report.read_text(encoding="utf-8"))
-		data["source_kind"] = "nested_map_vpk"
-		data["source_entry"] = entry.path
-		data["source_crc32"] = f"0x{entry.crc32:08x}"
-		data["source_size"] = entry.size
-		report.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-
-
-def detect_maps(vpk_dir: Path) -> list[str]:
-	maps = set()
-	for entry in vpk_entries(vpk_dir):
-		if entry.startswith("maps/") and entry.endswith(".vpk") and "/" not in entry[5:-4]:
-			maps.add(Path(entry).stem)
-		elif entry.startswith("maps/") and entry.endswith("/world_physics.vmdl_c"):
-			parts = entry.split("/")
-			if len(parts) >= 3:
-				maps.add(parts[1])
-	if not maps:
-		raise BakeError("No nested maps/*.vpk or world_physics.vmdl_c found in this Workshop item.")
-	return sorted(maps)
-
-
-def run_command(args: list[str], cwd: Path, timeout: int) -> str:
-	result = subprocess.run(args, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
-	if result.returncode != 0:
-		raise BakeError(result.stdout[-3000:] or f"Command failed: {args[0]}")
-	return result.stdout
-
-
-def cleanup_results() -> None:
-	RESULTS.mkdir(parents=True, exist_ok=True)
-	cutoff = time.time() - RESULT_TTL_SECONDS
-	for path in RESULTS.glob("*.zip"):
-		try:
-			if path.stat().st_mtime < cutoff:
-				path.unlink()
-		except OSError:
-			pass
-
-
-def bake(workshop_value: str) -> tuple[str, str | None]:
-	with JOB_LOCK:
-		cleanup_results()
-		workshop_id = extract_workshop_id(workshop_value)
-		job_id = uuid.uuid4().hex
-		result_zip = RESULTS / f"cs2fow-{workshop_id}-{job_id}.zip"
-
-		with tempfile.TemporaryDirectory(prefix="cs2fow-bake-") as temporary:
-			root = Path(temporary)
-			steam_root = root / "steam"
-			out_root = root / "ziproot" / "addons" / "cs2fow" / "data" / "maps"
-			out_root.mkdir(parents=True)
-
-			run_command([
-				str(STEAMCMD),
-				"+force_install_dir", str(steam_root),
-				"+login", "anonymous",
-				"+workshop_download_item", APP_ID, workshop_id, "validate",
-				"+quit",
-			], root, BAKER_TIMEOUT_SECONDS)
-
-			item_dir = steam_root / "steamapps" / "workshop" / "content" / APP_ID / workshop_id
-			vpks = sorted(item_dir.glob("*_dir.vpk"))
-			if not vpks:
-				raise BakeError("SteamCMD downloaded the item, but no *_dir.vpk was found.")
-
-			baked = []
-			for vpk in vpks:
-				for source in prepare_map_sources(vpk, root / "nested"):
-					output = out_root / f"{source.name}.bvh8"
-					log = run_command([
-						str(BAKER),
-						"--game", str(root / "empty-game"),
-						"--map", source.name,
-						"--vpk", str(source.vpk),
-						"--vrf", str(VRF),
-						"--output", str(output),
-					], root, BAKER_TIMEOUT_SECONDS)
-					if source.nested_entry is not None:
-						patch_nested_source_metadata(output, output.with_suffix(".json"), source.nested_entry)
-						log = log.strip() + f"\n{source.name}: nested source crc=0x{source.nested_entry.crc32:08x} preserved"
-					baked.append(log.strip())
-
-			with zipfile.ZipFile(result_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-				for path in sorted((root / "ziproot").rglob("*")):
-					if path.is_file():
-						archive.write(path, path.relative_to(root / "ziproot"))
-
-		return "Done.\n\n" + "\n".join(baked), str(result_zip)
-
-
-def page(body: str) -> bytes:
+def page(body: str, refresh: bool = False) -> bytes:
+	refresh_tag = '<meta http-equiv="refresh" content="2">' if refresh else ""
 	return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{refresh_tag}
 <title>CS2FOW Bake Service</title>
 <style>
 body {{ max-width: 760px; margin: 48px auto; padding: 0 18px; font: 16px system-ui, sans-serif; background: #0b0e12; color: #e8eef7; }}
 input, button {{ font: inherit; padding: 10px; border-radius: 6px; border: 1px solid #3a4656; background: #151b23; color: #e8eef7; }}
 input {{ width: 100%; box-sizing: border-box; }}
 button {{ margin-top: 12px; cursor: pointer; }}
-pre {{ white-space: pre-wrap; background: #151b23; padding: 12px; border-radius: 6px; overflow: auto; }}
+.result {{ white-space: pre-wrap; background: #151b23; padding: 12px; border-radius: 6px; overflow-wrap: anywhere; }}
 a {{ color: #7ee787; }}
 </style>
 </head>
 <body>
 <h1>CS2FOW Bake Service</h1>
-<p>Paste a CS2 Workshop map link or item ID. Output contains only CS2FOW <code>.bvh8</code> and <code>.json</code> bake data.</p>
+<p>Paste a CS2 Workshop map link or item ID. The result contains only CS2FOW map data.</p>
 {body}
 </body>
-</html>""".encode()
+</html>""".encode("utf-8")
 
 
-def home(message: str = "", download: str = "") -> bytes:
-	result = f"<pre>{html.escape(message)}</pre>" if message else ""
-	link = f'<p><a href="/download/{html.escape(download)}">Download zip</a></p>' if download else ""
+def home(message: str = "") -> bytes:
+	notice = f'<p class="result" role="alert">{html.escape(message)}</p>' if message else ""
 	return page(f"""
-<form method="post" action="/">
-<input name="workshop" placeholder="https://steamcommunity.com/sharedfiles/filedetails/?id=3349182536" required>
-<button type="submit">Bake</button>
+<form method="post" action="/bake">
+<label for="workshop">Workshop link or item ID</label>
+<input id="workshop" name="workshop" placeholder="https://steamcommunity.com/sharedfiles/filedetails/?id=3349182536" required>
+<button type="submit">Bake map</button>
 </form>
-{result}
-{link}
+{notice}
 """)
 
 
+def job_page(job: Job) -> bytes:
+	labels = {
+		"queued": "Waiting",
+		"running": "Baking",
+		"done": "Ready",
+		"failed": "Failed",
+	}
+	label = labels.get(job.state, "Unknown")
+	body = [
+		f"<h2>{html.escape(label)}</h2>",
+		f'<p class="result" role="status">{html.escape(job.message)}</p>',
+	]
+	if job.state == "done" and job.download_name:
+		body.append(f'<p><a href="/download/{html.escape(job.download_name)}">Download zip</a></p>')
+	body.append('<p><a href="/">Bake another map</a></p>')
+	return page("\n".join(body), refresh=job.state in {"queued", "running"})
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
-	def send_html(self, content: bytes, status: int = 200) -> None:
+	manager: BakeManager
+
+	def send_html(self, content: bytes, status: int = 200, head: bool = False,
+			extra_headers: dict[str, str] | None = None) -> None:
 		self.send_response(status)
 		self.send_header("Content-Type", "text/html; charset=utf-8")
 		self.send_header("Content-Length", str(len(content)))
+		for name, value in (extra_headers or {}).items():
+			self.send_header(name, value)
 		self.end_headers()
-		self.wfile.write(content)
+		if not head:
+			self.wfile.write(content)
 
-	def do_GET(self) -> None:
-		path = urlparse(self.path).path
-		if path in ("/", "/bake"):
-			self.send_html(home())
+	def send_page_error(self, status: int, message: str, head: bool = False) -> None:
+		self.send_html(home(message), status, head)
+
+	def serve_download(self, name: str, head: bool) -> None:
+		if not DOWNLOAD_RE.fullmatch(name) or Path(name).name != name:
+			self.send_page_error(404, "That result was not found.", head)
 			return
-		if path.startswith("/download/"):
-			name = path.removeprefix("/download/")
-			if "/" in name or "\\" in name or not name.endswith(".zip"):
-				self.send_error(404)
-				return
-			path = RESULTS / name
-			if not path.is_file():
-				self.send_error(404)
-				return
+		path = self.manager.results / name
+		if not path.is_file():
+			self.send_page_error(404, "That result has expired or was not found.", head)
+			return
+		try:
+			size = path.stat().st_size
 			self.send_response(200)
 			self.send_header("Content-Type", "application/zip")
 			self.send_header("Content-Disposition", f'attachment; filename="{name}"')
-			self.send_header("Content-Length", str(path.stat().st_size))
+			self.send_header("Content-Length", str(size))
 			self.end_headers()
-			with path.open("rb") as stream:
-				shutil.copyfileobj(stream, self.wfile)
+			if not head:
+				with path.open("rb") as stream:
+					shutil.copyfileobj(stream, self.wfile)
+		except OSError:
+			if not self.wfile.closed:
+				self.close_connection = True
+
+	def serve_get(self, head: bool) -> None:
+		path = urlparse(self.path).path
+		if path in {"/", "/bake"}:
+			self.send_html(home(), head=head)
 			return
-		self.send_error(404)
+		if path.startswith("/jobs/"):
+			job_id = path.removeprefix("/jobs/")
+			job = self.manager.get(job_id) if JOB_ID_RE.fullmatch(job_id) else None
+			if job is None:
+				self.send_page_error(404, "That bake job was not found.", head)
+			else:
+				self.send_html(job_page(job), head=head)
+			return
+		if path.startswith("/download/"):
+			self.serve_download(path.removeprefix("/download/"), head)
+			return
+		self.send_page_error(404, "That page was not found.", head)
+
+	def do_GET(self) -> None:
+		self.serve_get(False)
 
 	def do_HEAD(self) -> None:
-		path = urlparse(self.path).path
-		if path in ("/", "/bake"):
-			self.send_response(200)
-			self.send_header("Content-Type", "text/html; charset=utf-8")
-			self.end_headers()
-			return
-		self.send_error(404)
+		self.serve_get(True)
 
 	def do_POST(self) -> None:
-		path = urlparse(self.path).path
-		if path not in ("/", "/bake"):
-			self.send_error(404)
+		if urlparse(self.path).path not in {"/", "/bake"}:
+			self.send_page_error(404, "That page was not found.")
 			return
-		length = int(self.headers.get("Content-Length", "0"))
-		if length > 2048:
-			self.send_error(413)
-			return
-		fields = parse_qs(self.rfile.read(length).decode("utf-8", errors="replace"))
-		workshop = fields.get("workshop", [""])[0]
 		try:
-			message, zip_path = bake(workshop)
-			self.send_html(home(message, Path(zip_path).name if zip_path else ""))
-		except subprocess.TimeoutExpired:
-			self.send_html(home("Bake timed out. Try a smaller map or use a local baker."), 500)
+			length = int(self.headers.get("Content-Length", ""))
+		except ValueError:
+			self.send_page_error(400, "The submitted form was invalid.")
+			return
+		if length < 0:
+			self.send_page_error(400, "The submitted form was invalid.")
+			return
+		if length > MAX_FORM_BYTES:
+			self.send_page_error(413, "The submitted form was too large.")
+			return
+		try:
+			form = parse_qs(self.rfile.read(length).decode("utf-8"), keep_blank_values=True)
+			value = form.get("workshop", [""])[0]
+			job, _created = self.manager.submit(value)
+		except UnicodeDecodeError:
+			self.send_page_error(400, "The submitted form was invalid.")
+			return
+		except QueueFull as error:
+			self.send_page_error(429, str(error))
+			return
+		except BakeError as error:
+			self.send_page_error(400, str(error))
+			return
 		except Exception as error:
-			self.send_html(home(f"Failed: {error}"), 500)
-
-	def log_message(self, fmt: str, *args) -> None:
-		print(fmt % args, flush=True)
-
-
-def self_test() -> None:
-	assert extract_workshop_id("3349182536") == "3349182536"
-	assert extract_workshop_id("https://steamcommunity.com/sharedfiles/filedetails/?id=3349182536") == "3349182536"
-	try:
-		extract_workshop_id("https://example.com/?id=3349182536")
-		raise AssertionError("bad host accepted")
-	except BakeError:
-		pass
-
-	with tempfile.TemporaryDirectory() as temporary:
-		vpk = Path(temporary) / "test_dir.vpk"
-		tree = (
-			b"vpk\0maps\0de_test\0" + struct.pack("<IHHIIH", 0, 0, 0x7fff, 0, 1, 0xffff) +
-			b"\0" +
-			b"\0" +
-			b"\0"
-		)
-		vpk.write_bytes(struct.pack("<IIIIIII", 0x55AA1234, 2, len(tree), 0, 0, 0, 0) + tree)
-		assert detect_maps(vpk) == ["de_test"]
-
-		archive = Path(temporary) / "outer_000.vpk"
-		payload = b"nested-vpk"
-		outer = Path(temporary) / "outer_dir.vpk"
-		tree = (
-			b"vpk\0maps\0de_test\0" + struct.pack("<IHHIIH", 0, 0, 0, 0, len(payload), 0xffff) +
-			b"\0" +
-			b"\0" +
-			b"\0"
-		)
-		outer.write_bytes(struct.pack("<IIIIIII", 0x55AA1234, 2, len(tree), 0, 0, 0, 0) + tree)
-		archive.write_bytes(payload)
-		sources = prepare_map_sources(outer, Path(temporary) / "nested")
-		assert sources[0].name == "de_test"
-		assert sources[0].vpk.read_bytes() == payload
-		assert sources[0].nested_entry and sources[0].nested_entry.size == len(payload)
+			print(f"Unexpected request failure: {error!r}", flush=True)
+			self.send_page_error(500, "The server could not start that bake.")
+			return
+		location = f"/jobs/{job.id}"
+		self.send_html(page(f'<p>Continue to <a href="{location}">your bake job</a>.</p>'), 303,
+			extra_headers={"Location": location})
 
 
-def main() -> None:
-	RESULTS.mkdir(parents=True, exist_ok=True)
+def serve() -> None:
 	port = int(os.environ.get("PORT", "7860"))
+	manager = BakeManager()
+	Handler.manager = manager
 	server = http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler)
-	print(f"CS2FOW bake service listening on 0.0.0.0:{port}", flush=True)
-	server.serve_forever()
+	print(f"CS2FOW Bake Service listening on port {port}", flush=True)
+	try:
+		server.serve_forever()
+	finally:
+		server.server_close()
+		manager.close()
 
 
 if __name__ == "__main__":
-	parser = argparse.ArgumentParser()
-	parser.add_argument("--self-test", action="store_true")
-	args = parser.parse_args()
-	if args.self_test:
-		self_test()
-	else:
-		main()
+	serve()

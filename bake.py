@@ -167,12 +167,15 @@ def bake_workshop(workshop_id: str, job_id: str, results: Path = RESULTS) -> tup
 		if not baked_maps:
 			raise skipped[0][1]
 
-		temporary_zip = root / "result.zip"
-		with zipfile.ZipFile(temporary_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-			for path in sorted(zip_root.rglob("*")):
-				if path.is_file():
-					archive.write(path, path.relative_to(zip_root))
-		os.replace(temporary_zip, result_zip)
+		temporary_zip = result_zip.with_suffix(".tmp")
+		try:
+			with zipfile.ZipFile(temporary_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+				for path in sorted(zip_root.rglob("*")):
+					if path.is_file():
+						archive.write(path, path.relative_to(zip_root))
+			os.replace(temporary_zip, result_zip)
+		finally:
+			temporary_zip.unlink(missing_ok=True)
 	map_word = "map" if len(baked_maps) == 1 else "maps"
 	message = f"Done. Baked {len(baked_maps)} {map_word}:\n" + "\n".join(baked_maps)
 	if skipped:

@@ -52,6 +52,8 @@ class BakeArchiveTests(unittest.TestCase):
 	def test_archive_contains_only_baker_outputs_in_addon_layout(self) -> None:
 		with tempfile.TemporaryDirectory() as temporary:
 			results = Path(temporary) / "results"
+			moves: list[tuple[Path, Path]] = []
+			real_replace = os.replace
 
 			def fake_command(args: list[str], cwd: Path, timeout: int = bake.COMMAND_TIMEOUT_SECONDS):
 				if "+force_install_dir" in args:
@@ -66,10 +68,17 @@ class BakeArchiveTests(unittest.TestCase):
 					output.with_suffix(".json").write_text("{}\n", encoding="utf-8")
 				return subprocess.CompletedProcess(args, 0, "baked", "")
 
+			def checked_replace(source: Path, destination: Path) -> None:
+				moves.append((Path(source), Path(destination)))
+				real_replace(source, destination)
+
 			with mock.patch.object(bake, "run_command", side_effect=fake_command), \
-					mock.patch.object(bake, "listed_maps", return_value=["workshop/3349182536/de_test"]):
+					mock.patch.object(bake, "listed_maps", return_value=["workshop/3349182536/de_test"]), \
+					mock.patch.object(bake.os, "replace", side_effect=checked_replace):
 				_message, result = bake.bake_workshop("3349182536", "a" * 32, results)
 
+			self.assertEqual(moves[0][0].parent, results)
+			self.assertEqual(moves[0][1].parent, results)
 			with zipfile.ZipFile(result) as archive:
 				self.assertEqual(archive.namelist(), [
 					"addons/cs2fow/data/maps/workshop/3349182536/de_test.bvh8",

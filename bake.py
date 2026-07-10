@@ -129,6 +129,7 @@ def bake_workshop(workshop_id: str, job_id: str, results: Path = RESULTS) -> tup
 			raise BakeError("SteamCMD downloaded the item, but no *_dir.vpk was found.")
 
 		seen: set[str] = set()
+		skipped: list[tuple[str, CommandError]] = []
 		for vpk in vpks:
 			for map_name in listed_maps(vpk, root):
 				if map_name in seen:
@@ -136,20 +137,35 @@ def bake_workshop(workshop_id: str, job_id: str, results: Path = RESULTS) -> tup
 				seen.add(map_name)
 				output = out_root / f"{map_name}.bvh8"
 				output.parent.mkdir(parents=True, exist_ok=True)
-				result = run_command([
-					str(BAKER),
-					"--game", str(root / "empty-game"),
-					"--map", map_name,
-					"--vpk", str(vpk),
-					"--vrf", str(VRF),
-					"--output", str(output),
-				], root)
+				try:
+					result = run_command([
+						str(BAKER),
+						"--game", str(root / "empty-game"),
+						"--map", map_name,
+						"--vpk", str(vpk),
+						"--vrf", str(VRF),
+						"--output", str(output),
+					], root)
+				except CommandError as error:
+					missing_physics = f"VPK entry not found: maps/{map_name}/world_physics.vmdl_c"
+					if missing_physics not in error.detail:
+						raise
+					for partial in (output, output.with_suffix(".json")):
+						try:
+							partial.unlink(missing_ok=True)
+						except OSError:
+							pass
+					skipped.append((map_name, error))
+					print(f"Skipping map candidate {workshop_id}/{map_name}: {error.detail}", flush=True)
+					continue
 				baked_maps.append(map_name)
 				log = (result.stdout + result.stderr).strip()
 				if log:
 					print(f"Baker output for {workshop_id}/{map_name}:\n{log}", flush=True)
 		if not seen:
 			raise BakeError("No CS2 maps were found in this Workshop item.")
+		if not baked_maps:
+			raise skipped[0][1]
 
 		temporary_zip = root / "result.zip"
 		with zipfile.ZipFile(temporary_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
@@ -159,6 +175,9 @@ def bake_workshop(workshop_id: str, job_id: str, results: Path = RESULTS) -> tup
 		os.replace(temporary_zip, result_zip)
 	map_word = "map" if len(baked_maps) == 1 else "maps"
 	message = f"Done. Baked {len(baked_maps)} {map_word}:\n" + "\n".join(baked_maps)
+	if skipped:
+		candidate_word = "candidate" if len(skipped) == 1 else "candidates"
+		message += f"\nSkipped {len(skipped)} {candidate_word} without physics:\n" + "\n".join(name for name, _error in skipped)
 	return message, result_zip
 
 

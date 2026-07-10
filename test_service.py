@@ -76,6 +76,41 @@ class BakeArchiveTests(unittest.TestCase):
 					"addons/cs2fow/data/maps/workshop/3349182536/de_test.json",
 				])
 
+	def test_skips_nested_candidate_without_world_physics(self) -> None:
+		with tempfile.TemporaryDirectory() as temporary:
+			results = Path(temporary) / "results"
+
+			def fake_command(args: list[str], cwd: Path, timeout: int = bake.COMMAND_TIMEOUT_SECONDS):
+				if "+force_install_dir" in args:
+					steam_root = Path(args[args.index("+force_install_dir") + 1])
+					item = steam_root / "steamapps" / "workshop" / "content" / "730" / "3754320383"
+					item.mkdir(parents=True)
+					(item / "workshop_dir.vpk").write_bytes(b"vpk")
+				elif "--output" in args:
+					map_name = args[args.index("--map") + 1]
+					output = Path(args[args.index("--output") + 1])
+					if map_name == "aim_cache_sky":
+						raise bake.CommandError(
+							"cs2fow_baker",
+							"cs2fow_baker: VPK entry not found: maps/aim_cache_sky/world_physics.vmdl_c",
+						)
+					output.parent.mkdir(parents=True, exist_ok=True)
+					output.write_bytes(b"bvh8")
+					output.with_suffix(".json").write_text("{}\n", encoding="utf-8")
+				return subprocess.CompletedProcess(args, 0, "", "")
+
+			with mock.patch.object(bake, "run_command", side_effect=fake_command), \
+					mock.patch.object(bake, "listed_maps", return_value=["aim_cache", "aim_cache_sky"]):
+				message, result = bake.bake_workshop("3754320383", "b" * 32, results)
+
+			self.assertIn("Done. Baked 1 map:\naim_cache", message)
+			self.assertIn("Skipped 1 candidate without physics:\naim_cache_sky", message)
+			with zipfile.ZipFile(result) as archive:
+				self.assertEqual(archive.namelist(), [
+					"addons/cs2fow/data/maps/aim_cache.bvh8",
+					"addons/cs2fow/data/maps/aim_cache.json",
+				])
+
 
 class ManagerTests(unittest.TestCase):
 	def test_zero_waiting_slots_still_allows_one_active_job(self) -> None:

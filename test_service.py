@@ -210,6 +210,56 @@ class HttpTests(unittest.TestCase):
 		connection.close()
 		return result
 
+	def test_home_has_landing_page_content_and_accessible_form(self) -> None:
+		status, _headers, body = self.request("GET", "/")
+		self.assertEqual(status, 200)
+		page = body.decode("utf-8")
+		for text in (
+			"CS2FOW",
+			"Make a Workshop map ready for CS2FOW.",
+			"Workshop link or item ID",
+			"How it works",
+			"bvh8",
+			"json",
+			"One active bake",
+			"Two waiting spots",
+			"two hours",
+		):
+			with self.subTest(text=text):
+				self.assertIn(text, page)
+		self.assertIn('aria-labelledby="bake-heading"', page)
+		self.assertIn('id="how-it-works"', page)
+		self.assertIn("aria-label=\"Service features\"", page)
+
+	def test_job_states_use_shared_layout_refresh_and_escaped_text(self) -> None:
+		download_name = f"cs2fow-3349182536-{'a' * 32}.zip"
+		for state, label in (
+			("queued", "Waiting"),
+			("running", "Baking"),
+			("done", "Ready"),
+			("failed", "Failed"),
+		):
+			with self.subTest(state=state):
+				job = bake.Job(
+					"b" * 32,
+					"<workshop>",
+					state=state,
+					message="<script>alert(1)</script>",
+					download_name=download_name if state == "done" else "",
+				)
+				page = app.job_page(job).decode("utf-8")
+				self.assertIn("CS2FOW", page)
+				self.assertIn(label, page)
+				self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", page)
+				self.assertNotIn("<script>alert(1)</script>", page)
+				self.assertIn('aria-label="Bake progress"', page)
+				if state in {"queued", "running"}:
+					self.assertIn('http-equiv="refresh"', page)
+				else:
+					self.assertNotIn('http-equiv="refresh"', page)
+				if state == "done":
+					self.assertIn("Download ZIP", page)
+
 	def test_form_job_status_download_and_head(self) -> None:
 		status, _headers, _body = self.request("POST", "/bake", b"workshop=bad", {
 			"Content-Type": "application/x-www-form-urlencoded",
@@ -242,6 +292,18 @@ class HttpTests(unittest.TestCase):
 		self.assertEqual(status, 200)
 		self.assertEqual(headers["Content-Length"], str(len(b"test zip")))
 		self.assertEqual(body, b"")
+
+	def test_bake_errors_use_shared_layout_and_escape_message(self) -> None:
+		with mock.patch.object(self.manager, "submit", side_effect=bake.BakeError("<bad input>")):
+			form = urllib.parse.urlencode({"workshop": "3349182536"}).encode()
+			status, _headers, body = self.request("POST", "/bake", form, {
+				"Content-Type": "application/x-www-form-urlencoded",
+			})
+		self.assertEqual(status, 400)
+		page = body.decode("utf-8")
+		self.assertIn("site-header", page)
+		self.assertIn("&lt;bad input&gt;", page)
+		self.assertNotIn("<bad input>", page)
 
 	def test_unknown_paths_do_not_expose_files(self) -> None:
 		for path in ("/jobs/not-a-job", "/download/../secret.zip", "/unknown"):

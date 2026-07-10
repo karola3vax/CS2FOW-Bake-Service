@@ -25,7 +25,7 @@ RUN mkdir -p /opt/steamcmd /opt/cs2fow \
 
 ARG CS2FOW_VERSION=0.2.0-preview
 ARG CS2FOW_ARCHIVE_URL
-ARG CS2FOW_SHA256
+ARG CS2FOW_SHA256=A812B1A970F50A986B5B9A549407C8793B1AB6B6B1B9E065E84C971FB2D0A127
 RUN test -n "$CS2FOW_SHA256" \
 	&& url="${CS2FOW_ARCHIVE_URL:-https://github.com/karola3vax/CS2FOW/releases/download/v${CS2FOW_VERSION}/cs2fow-${CS2FOW_VERSION}-linux-x86_64.zip}" \
 	&& curl -fsSL -o /tmp/cs2fow.zip "$url" \

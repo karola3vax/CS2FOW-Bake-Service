@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.client
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -46,6 +47,57 @@ class WorkshopIdTests(unittest.TestCase):
 		for value in bad_values:
 			with self.subTest(value=value), self.assertRaises(bake.BakeError):
 				bake.extract_workshop_id(value)
+
+
+class CommandTests(unittest.TestCase):
+	def test_success_failure_and_timeout(self) -> None:
+		with tempfile.TemporaryDirectory() as temporary:
+			cwd = Path(temporary)
+			result = bake.run_command([sys.executable, "-c", "print('ready')"], cwd)
+			self.assertEqual(result.stdout.strip(), "ready")
+
+			with self.assertRaises(bake.CommandError) as failure:
+				bake.run_command([
+					sys.executable, "-c",
+					"import sys; print('out'); print('err', file=sys.stderr); raise SystemExit(7)",
+				], cwd)
+			self.assertIn("err", failure.exception.detail)
+			self.assertIn("out", failure.exception.detail)
+			self.assertNotIn("err", str(failure.exception))
+			self.assertLessEqual(len(failure.exception.detail), 3000)
+
+			started = time.monotonic()
+			with self.assertRaises(subprocess.TimeoutExpired):
+				bake.run_command([sys.executable, "-c", "import time; time.sleep(30)"], cwd, timeout=0.1)
+			self.assertLess(time.monotonic() - started, 2)
+
+	@unittest.skipUnless(sys.platform.startswith("linux"), "Linux process-group behavior")
+	def test_timeout_stops_descendant_process(self) -> None:
+		with tempfile.TemporaryDirectory() as temporary:
+			cwd = Path(temporary)
+			pid_file = cwd / "child.pid"
+			script = cwd / "parent.py"
+			script.write_text(
+				"import pathlib, subprocess, sys, time\n"
+				"child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+				"pathlib.Path(sys.argv[1]).write_text(str(child.pid))\n"
+				"time.sleep(30)\n",
+				encoding="utf-8",
+			)
+			with self.assertRaises(subprocess.TimeoutExpired):
+				bake.run_command([sys.executable, str(script), str(pid_file)], cwd, timeout=0.5)
+			child_pid = int(pid_file.read_text(encoding="utf-8"))
+			deadline = time.monotonic() + 2
+			while time.monotonic() < deadline:
+				try:
+					state = Path(f"/proc/{child_pid}/stat").read_text(encoding="utf-8").split()[2]
+				except (FileNotFoundError, ProcessLookupError):
+					break
+				if state == "Z":
+					break
+				time.sleep(0.02)
+			else:
+				self.fail(f"descendant process {child_pid} survived the timeout")
 
 
 class BakeArchiveTests(unittest.TestCase):
@@ -217,6 +269,25 @@ class ManagerTests(unittest.TestCase):
 					manager.jobs[job.id].updated = old
 				self.assertIsNone(manager.get(job.id))
 				self.assertFalse(result.exists())
+			finally:
+				manager.close()
+
+	def test_download_lookup_expires_file_from_previous_process(self) -> None:
+		with tempfile.TemporaryDirectory() as temporary:
+			results = Path(temporary)
+			stale = results / f"cs2fow-3349182536-{'a' * 32}.zip"
+			stale.write_bytes(b"old zip")
+			published = 1_700_000_000
+			os.utime(stale, (published, published))
+			manager = bake.BakeManager(results=results, max_queued=2, ttl_seconds=1)
+			try:
+				with mock.patch.object(bake.time, "time", return_value=published + 1), \
+						mock.patch.object(Path, "unlink", side_effect=PermissionError):
+					self.assertIsNone(manager.get_download(stale.name))
+				self.assertTrue(stale.exists())
+				with mock.patch.object(bake.time, "time", return_value=published + 1):
+					self.assertIsNone(manager.get_download(stale.name))
+				self.assertFalse(stale.exists())
 			finally:
 				manager.close()
 

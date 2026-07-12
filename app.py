@@ -534,8 +534,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 		if not DOWNLOAD_RE.fullmatch(name) or Path(name).name != name:
 			self.send_page_error(404, "That result was not found.", head)
 			return
-		path = self.manager.results / name
-		if not path.is_file():
+		path = self.manager.get_download(name)
+		if path is None:
 			self.send_page_error(404, "That result has expired or was not found.", head)
 			return
 		try:

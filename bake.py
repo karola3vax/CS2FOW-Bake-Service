@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import subprocess
 import tempfile
 import threading
@@ -78,15 +79,27 @@ def extract_workshop_id(value: str) -> str:
 
 
 def run_command(args: list[str], cwd: Path, timeout: int = COMMAND_TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str]:
-	result = subprocess.run(
+	process = subprocess.Popen(
 		args,
 		cwd=cwd,
 		text=True,
 		stdout=subprocess.PIPE,
 		stderr=subprocess.PIPE,
-		timeout=timeout,
-		check=False,
+		start_new_session=os.name == "posix",
 	)
+	try:
+		stdout, stderr = process.communicate(timeout=timeout)
+	except subprocess.TimeoutExpired:
+		if os.name == "posix":
+			try:
+				os.killpg(process.pid, signal.SIGKILL)
+			except ProcessLookupError:
+				pass
+		else:
+			process.kill()
+		process.communicate()
+		raise
+	result = subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
 	if result.returncode != 0:
 		detail = (result.stderr + "\n" + result.stdout).strip()[-3000:]
 		raise CommandError(Path(args[0]).name, detail or "No command output was captured.")
@@ -213,12 +226,12 @@ class BakeManager:
 		cutoff = now - self.ttl_seconds
 		for path in self.results.glob("*.zip"):
 			try:
-				if path.stat().st_mtime < cutoff:
+				if path.stat().st_mtime <= cutoff:
 					path.unlink()
 			except OSError:
 				pass
 		for job_id, job in list(self.jobs.items()):
-			if job.state in {"queued", "running"} or job.updated >= cutoff:
+			if job.state in {"queued", "running"} or job.updated > cutoff:
 				continue
 			self.jobs.pop(job_id, None)
 			if self.by_workshop.get(job.workshop_id) == job_id:
@@ -250,6 +263,16 @@ class BakeManager:
 			self._cleanup_locked(time.time())
 			job = self.jobs.get(job_id)
 			return replace(job) if job is not None else None
+
+	def get_download(self, name: str) -> Path | None:
+		with self.condition:
+			now = time.time()
+			self._cleanup_locked(now)
+			path = self.results / name
+			try:
+				return path if path.is_file() and path.stat().st_mtime > now - self.ttl_seconds else None
+			except OSError:
+				return None
 
 	def _worker(self) -> None:
 		while True:

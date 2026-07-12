@@ -426,6 +426,29 @@ class HttpTests(unittest.TestCase):
 				status, _headers, _body = self.request("GET", path)
 				self.assertEqual(status, 404)
 
+	def test_direct_download_link_expires(self) -> None:
+		name = f"cs2fow-3349182536-{'c' * 32}.zip"
+		path = self.manager.results / name
+		path.write_bytes(b"old zip")
+		old = time.time() - self.manager.ttl_seconds - 1
+		os.utime(path, (old, old))
+
+		status, _headers, _body = self.request("GET", f"/download/{name}")
+		self.assertEqual(status, 404)
+		self.assertFalse(path.exists())
+
+
+class DockerfileTests(unittest.TestCase):
+	def test_archive_url_and_checksum_are_explicit(self) -> None:
+		text = Path(__file__).with_name("Dockerfile").read_text(encoding="utf-8")
+		self.assertIn("ARG CS2FOW_ARCHIVE_URL\n", text)
+		self.assertIn("ARG CS2FOW_SHA256\n", text)
+		self.assertIn("CS2FOW_ARCHIVE_URL build argument is required", text)
+		self.assertIn("CS2FOW_SHA256 build argument is required", text)
+		self.assertLess(text.index("CS2FOW_ARCHIVE_URL build argument is required"), text.index("apt-get update"))
+		self.assertNotIn("releases/download", text)
+		self.assertNotIn("A812B1A970F50A986B5B9A549407C8793", text)
+
 
 if __name__ == "__main__":
 	unittest.main()

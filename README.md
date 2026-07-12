@@ -27,13 +27,7 @@ The tests use fake bake commands. They do not download Steam content.
 
 ## Build the container
 
-The image uses the pinned 0.2.0-preview Linux release and its exact SHA-256 checksum by default. This prevents a changed or incomplete download from silently entering the service image. Render can build the image without any extra Docker settings.
-
-```sh
-docker build -t cs2fow-bake-service .
-```
-
-To test another archive, pass both its URL and checksum:
+The image requires the URL and exact SHA-256 checksum of a CS2FOW Linux package. There is no default release URL: provide both values so an absent or replaced package cannot silently enter the service image.
 
 ```sh
 docker build \
@@ -42,7 +36,7 @@ docker build \
   -t cs2fow-bake-service .
 ```
 
-Render automatically makes service environment variables available as Docker build arguments. You can override CS2FOW_ARCHIVE_URL and CS2FOW_SHA256 in the service settings when testing a different archive.
+For Render, set `CS2FOW_ARCHIVE_URL` and `CS2FOW_SHA256` in the service environment before building. Render makes those values available as Docker build arguments, as described in its [Docker documentation](https://render.com/docs/docker). Mount a persistent disk at `/var/lib/cs2fow-results` if completed downloads must survive a service restart.
 
 ```sh
 docker run --rm -p 7860:7860 cs2fow-bake-service

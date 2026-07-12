@@ -1,5 +1,10 @@
 FROM python:3.11-slim-bookworm
 
+ARG CS2FOW_ARCHIVE_URL
+ARG CS2FOW_SHA256
+RUN if [ -z "$CS2FOW_ARCHIVE_URL" ]; then echo >&2 "CS2FOW_ARCHIVE_URL build argument is required"; exit 1; fi \
+	&& if [ -z "$CS2FOW_SHA256" ]; then echo >&2 "CS2FOW_SHA256 build argument is required"; exit 1; fi
+
 ENV DEBIAN_FRONTEND=noninteractive \
 	PYTHONDONTWRITEBYTECODE=1 \
 	PYTHONUNBUFFERED=1 \
@@ -23,12 +28,7 @@ RUN mkdir -p /opt/steamcmd /opt/cs2fow \
 	&& curl -fsSL https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz \
 		| tar -xz -C /opt/steamcmd
 
-ARG CS2FOW_VERSION=0.2.0-preview
-ARG CS2FOW_ARCHIVE_URL
-ARG CS2FOW_SHA256=A812B1A970F50A986B5B9A549407C8793B1AB6B6B1B9E065E84C971FB2D0A127
-RUN test -n "$CS2FOW_SHA256" \
-	&& url="${CS2FOW_ARCHIVE_URL:-https://github.com/karola3vax/CS2FOW/releases/download/v${CS2FOW_VERSION}/cs2fow-${CS2FOW_VERSION}-linux-x86_64.zip}" \
-	&& curl -fsSL -o /tmp/cs2fow.zip "$url" \
+RUN curl -fsSL -o /tmp/cs2fow.zip "$CS2FOW_ARCHIVE_URL" \
 	&& echo "$CS2FOW_SHA256  /tmp/cs2fow.zip" | sha256sum -c - \
 	&& unzip -q /tmp/cs2fow.zip -d /opt/cs2fow \
 	&& rm /tmp/cs2fow.zip \

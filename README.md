@@ -27,7 +27,7 @@ The tests use fake bake commands. They do not download Steam content.
 
 ## Build the container
 
-The image defaults to the CS2FOW `0.2.0-preview` Linux package and verifies its exact SHA-256 checksum.
+The image defaults to the CS2FOW `0.2.1-preview` Linux package and verifies its exact SHA-256 checksum.
 
 ```sh
 docker build -t cs2fow-bake-service .

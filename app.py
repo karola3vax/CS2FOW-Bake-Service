@@ -13,317 +13,30 @@ from urllib.parse import parse_qs, urlparse
 from bake import BakeError, BakeManager, Job, QueueFull
 
 
+ROOT = Path(__file__).resolve().parent
+STATIC_ROOT = ROOT / "static"
 JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 DOWNLOAD_RE = re.compile(r"^cs2fow-[0-9]{6,20}-[0-9a-f]{32}\.zip$")
 MAX_FORM_BYTES = 2048
-
-
-SITE_CSS = """
-:root {
-  color-scheme: dark;
-  --bg: #080c12;
-  --border: #263548;
-  --text: #edf3fa;
-  --muted: #8da0b5;
-  --accent: #68e0a5;
-  --accent-strong: #a3f5c6;
-  --accent-ink: #07130d;
-  --warning: #ffc66d;
-  --danger: #ff8d8d;
-  --space-1: 8px;
-  --space-2: 16px;
-  --space-3: 24px;
-  --radius: 18px;
-  --shadow: 0 24px 60px rgba(0, 0, 0, .24);
+STATIC_FILES = {
+	"/assets/site.css": ("site.css", "text/css; charset=utf-8"),
+	"/assets/site.js": ("site.js", "text/javascript; charset=utf-8"),
+	"/assets/scan_cbbl.webp": ("scan_cbbl.webp", "image/webp"),
 }
-
-* { box-sizing: border-box; }
-
-body {
-  min-width: 320px;
-  margin: 0;
-  background:
-    radial-gradient(circle at 12% 0%, rgba(72, 174, 133, .14), transparent 34rem),
-    radial-gradient(circle at 92% 12%, rgba(70, 105, 160, .12), transparent 28rem),
-    var(--bg);
-  color: var(--text);
-  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
-}
-
-a { color: var(--accent-strong); }
-a:hover { color: #d3ffe4; }
-a:focus-visible, button:focus-visible, input:focus-visible {
-  outline: 3px solid var(--accent);
-  outline-offset: 3px;
-}
-
-.shell { width: min(1120px, calc(100% - 40px)); margin: 0 auto; }
-.site-header {
-  border-bottom: 1px solid rgba(141, 160, 181, .16);
-  background: rgba(8, 12, 18, .76);
-  backdrop-filter: blur(14px);
-}
-.header-inner {
-  min-height: 76px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-}
-.brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 11px;
-  color: var(--text);
-  font-size: 15px;
-  font-weight: 800;
-  letter-spacing: .18em;
-  text-decoration: none;
-}
-.brand-mark {
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--accent);
-  border-radius: 8px;
-  color: var(--accent);
-  font-size: 20px;
-  line-height: 1;
-  box-shadow: 0 0 22px rgba(104, 224, 165, .18);
-}
-.header-link {
-  color: var(--muted);
-  font-size: 14px;
-  font-weight: 650;
-  text-decoration: none;
-}
-.header-link:hover { color: var(--text); }
-
-main.shell { padding: 76px 0 96px; }
-.hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1.08fr) minmax(320px, .92fr);
-  align-items: center;
-  gap: clamp(36px, 7vw, 92px);
-}
-.hero-copy { max-width: 650px; }
-.eyebrow, .card-kicker {
-  margin: 0 0 13px;
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: .14em;
-  text-transform: uppercase;
-}
-h1, h2, h3, p { margin-top: 0; }
-h1 {
-  max-width: 720px;
-  margin-bottom: 20px;
-  font-size: clamp(2.5rem, 6vw, 5rem);
-  letter-spacing: -.055em;
-  line-height: .98;
-}
-h2 { margin-bottom: 10px; font-size: clamp(1.55rem, 3vw, 2.1rem); letter-spacing: -.03em; }
-h3 { margin-bottom: 7px; font-size: 1.08rem; }
-.lede { max-width: 590px; margin-bottom: 25px; color: var(--muted); font-size: 18px; }
-.hero-tags { display: flex; flex-wrap: wrap; gap: var(--space-1); }
-.tag {
-  padding: 7px 11px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.card, .info-card, .step {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: linear-gradient(145deg, rgba(21, 31, 44, .9), rgba(13, 20, 30, .92));
-  box-shadow: var(--shadow);
-}
-.form-card { padding: clamp(24px, 4vw, 38px); }
-.form-card h2 { margin-bottom: 24px; }
-label { display: block; margin-bottom: 8px; color: var(--text); font-weight: 700; }
-.input-row { display: flex; gap: var(--space-1); }
-input, button {
-  min-height: 50px;
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  color: var(--text);
-  font: inherit;
-}
-input {
-  width: 100%;
-  min-width: 0;
-  padding: 0 14px;
-  background: rgba(8, 12, 18, .72);
-}
-input::placeholder { color: #687b90; }
-button, .button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 0 18px;
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--accent-ink);
-  cursor: pointer;
-  font-weight: 800;
-  text-decoration: none;
-  white-space: nowrap;
-}
-button:hover, .button:hover { border-color: var(--accent-strong); background: var(--accent-strong); color: var(--accent-ink); }
-.field-note { margin: 12px 0 0; color: var(--muted); font-size: 13px; }
-.notice {
-  display: grid;
-  gap: 3px;
-  margin-top: 20px;
-  padding: 14px 16px;
-  border: 1px solid rgba(255, 141, 141, .4);
-  border-radius: 12px;
-  background: rgba(255, 141, 141, .08);
-  color: #ffd2d2;
-}
-
-.section { margin-top: 110px; }
-.section-heading { max-width: 620px; margin-bottom: var(--space-3); }
-.section-heading p { color: var(--muted); }
-.steps, .info-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-2); }
-.step, .info-card { padding: 24px; box-shadow: none; }
-.step-number {
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  margin-bottom: 20px;
-  border-radius: 10px;
-  background: rgba(104, 224, 165, .12);
-  color: var(--accent);
-  font-weight: 800;
-}
-.step p, .info-card p { margin-bottom: 0; color: var(--muted); }
-.info-card strong { display: block; margin-bottom: 7px; color: var(--text); font-size: 1.05rem; }
-
-.job-card { max-width: 820px; margin: 0 auto; padding: clamp(25px, 5vw, 48px); }
-.job-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
-.job-heading h1 { margin-bottom: 12px; font-size: clamp(2.2rem, 5vw, 4rem); }
-.job-id { margin-bottom: 0; color: var(--muted); font-size: 14px; }
-.job-id code { color: var(--text); }
-.status-badge {
-  flex: 0 0 auto;
-  padding: 7px 11px;
-  border: 1px solid currentColor;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-}
-.status-badge.waiting { color: var(--warning); }
-.status-badge.baking { color: var(--accent); }
-.status-badge.ready { color: var(--accent-strong); }
-.status-badge.failed { color: var(--danger); }
-.timeline {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0;
-  margin: 40px 0 28px;
-  padding: 0;
-  list-style: none;
-}
-.timeline-item {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  color: #60748b;
-  font-size: 13px;
-  font-weight: 700;
-}
-.timeline-item:not(:last-child)::after {
-  content: "";
-  height: 1px;
-  flex: 1;
-  margin: 0 12px;
-  background: var(--border);
-}
-.timeline-dot {
-  width: 27px;
-  height: 27px;
-  display: grid;
-  flex: 0 0 auto;
-  place-items: center;
-  border: 1px solid currentColor;
-  border-radius: 50%;
-  font-size: 12px;
-}
-.timeline-item.complete, .timeline-item.current { color: var(--accent); }
-.timeline-item.failed { color: var(--danger); }
-.timeline-item.current .timeline-dot, .timeline-item.failed .timeline-dot { background: currentColor; color: var(--bg); }
-.result {
-  margin: 0 0 24px;
-  padding: 16px;
-  overflow-wrap: anywhere;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: rgba(8, 12, 18, .62);
-  color: var(--muted);
-  white-space: pre-wrap;
-}
-.download-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  margin-bottom: 24px;
-  padding: 20px;
-  border: 1px solid rgba(104, 224, 165, .38);
-  border-radius: 14px;
-  background: rgba(104, 224, 165, .08);
-}
-.download-card p { margin-bottom: 0; color: var(--muted); }
-.job-back { color: var(--muted); font-size: 14px; }
-.narrow-card { max-width: 680px; margin: 30px auto; padding: 34px; }
-.narrow-card h1 { font-size: clamp(2rem, 5vw, 3.2rem); }
-
-.site-footer {
-  padding: 0 0 34px;
-  color: #60748b;
-  font-size: 13px;
-  text-align: center;
-}
-
-@media (max-width: 800px) {
-  .hero { grid-template-columns: 1fr; }
-  .steps, .info-grid { grid-template-columns: 1fr; }
-  main.shell { padding-top: 52px; }
-}
-
-@media (max-width: 560px) {
-  .shell { width: min(100% - 28px, 1120px); }
-  .header-inner { min-height: 66px; }
-  .header-link { font-size: 13px; }
-  h1 { font-size: clamp(2.45rem, 14vw, 4rem); }
-  .input-row, .download-card, .job-heading { align-items: stretch; flex-direction: column; }
-  button, .button { width: 100%; }
-  .timeline-item { display: block; text-align: center; }
-  .timeline-item:not(:last-child)::after { display: block; margin: 10px 0; }
-  .timeline-dot { margin: 0 auto 6px; }
-}
-"""
 
 
 def site_header() -> str:
 	return """
 <header class="site-header">
 <div class="shell header-inner">
-<a class="brand" href="/">
-<span class="brand-mark" aria-hidden="true">+</span>
-<span>CS2FOW</span>
+<a class="brand" href="/" aria-label="CS2FOW Map Baker home">
+<span class="brand-mark" aria-hidden="true"></span>
+<span class="brand-copy"><strong>CS2FOW</strong><span>Map Baker</span></span>
 </a>
-<a class="header-link" href="/#bake">Bake a map <span aria-hidden="true">→</span></a>
+<nav class="site-nav" aria-label="Primary navigation">
+<a href="/#bake">Bake</a>
+<a href="https://github.com/karola3vax/CS2FOW">GitHub</a>
+</nav>
 </div>
 </header>
 """
@@ -337,25 +50,33 @@ CS2FOW visibility data, built from a Steam Workshop map.
 """
 
 
-def page(body: str, refresh: bool = False, title: str = "CS2FOW Bake Service") -> bytes:
+def page(body: str, refresh: bool = False, title: str = "CS2FOW Map Baker",
+		page_class: str = "") -> bytes:
 	refresh_tag = '<meta http-equiv="refresh" content="2">' if refresh else ""
 	return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Turn a Steam Workshop map into CS2FOW visibility data.">
+<meta name="theme-color" content="#f5f5f7">
 {refresh_tag}
 <title>{html.escape(title, quote=True)}</title>
-<style>{SITE_CSS}</style>
+<link rel="stylesheet" href="/assets/site.css">
+<script defer src="/assets/site.js"></script>
 </head>
-<body>
+<body class="{html.escape(page_class, quote=True)}">
 {site_header()}
-<main class="shell">
+<main class="app-main">
 {body}
 </main>
 {site_footer()}
 </body>
 </html>""".encode("utf-8")
+
+
+def mesh_backdrop() -> str:
+	return '<img class="status-backdrop" src="/assets/scan_cbbl.webp" alt="" width="1648" height="950">'
 
 
 def home(message: str = "") -> bytes:
@@ -365,83 +86,69 @@ def home(message: str = "") -> bytes:
 		if message else ""
 	)
 	return page(f"""
-<section class="hero">
-<div class="hero-copy">
-<p class="eyebrow">Workshop map <span aria-hidden="true">→</span> CS2FOW data</p>
-<h1>Make a Workshop map ready for CS2FOW.</h1>
-<p class="lede">Paste a Steam Workshop link and this service will build the visibility files CS2FOW needs.</p>
-<div class="hero-tags" aria-label="Service features">
-<span class="tag">No map upload</span>
-<span class="tag">Steam Workshop source</span>
-<span class="tag">ZIP ready to install</span>
+<section id="bake" class="hero" data-hero aria-labelledby="hero-heading">
+<div class="hero-halo" aria-hidden="true"></div>
+<div class="hero-copy" data-hero-copy>
+<p class="eyebrow">Workshop map <span aria-hidden="true">&rarr;</span> visibility data</p>
+<h1 id="hero-heading">Bake your map <span>for CS2FOW.</span></h1>
+<p class="hero-lede">Paste a Steam Workshop link. Get the exact visibility files your server needs.</p>
+<form class="bake-form" method="post" action="/bake">
+<label class="sr-only" for="workshop">Workshop link or item ID</label>
+<div class="bake-control">
+<input id="workshop" name="workshop" placeholder="Workshop link or item ID" autocomplete="off" spellcheck="false" required>
+<button class="primary-button" type="submit">Bake map <span aria-hidden="true">&rarr;</span></button>
 </div>
-</div>
-<section id="bake" class="card form-card" aria-labelledby="bake-heading">
-<p class="card-kicker">Start a bake</p>
-<h2 id="bake-heading">Workshop map</h2>
-<form method="post" action="/bake">
-<label for="workshop">Workshop link or item ID</label>
-<div class="input-row">
-<input id="workshop" name="workshop" placeholder="https://steamcommunity.com/sharedfiles/filedetails/?id=3349182536" required>
-<button type="submit">Bake map <span aria-hidden="true">→</span></button>
-</div>
-<p class="field-note">Use the full Steam link or its numeric item ID.</p>
-</form>
+<p class="form-note">Use a public Steam Workshop URL or its numeric item ID.</p>
 {notice}
-</section>
+</form>
+</div>
+<figure class="hero-visual" data-hero-visual>
+<img src="/assets/scan_cbbl.webp" alt="Baked 3D collision mesh of a Counter-Strike map" width="1648" height="950">
+<figcaption class="hero-caption">A real baked map mesh</figcaption>
+</figure>
+<div class="scroll-cue" aria-hidden="true">Explore</div>
 </section>
 
-<section id="how-it-works" class="section" aria-labelledby="how-heading">
-<div class="section-heading">
-<p class="eyebrow">Simple by design</p>
-<h2 id="how-heading">How it works</h2>
-<p>From Workshop link to usable map data.</p>
-<p>There is nothing to install on this page. The baker handles the heavy work and gives you one package at the end.</p>
+<div class="shell home-content">
+<section aria-labelledby="process-heading">
+<div class="section-heading" data-reveal>
+<p class="eyebrow">Three simple steps</p>
+<h2 id="process-heading">Paste. Bake. Install.</h2>
+<p>The service handles the heavy work and gives you one clean package at the end.</p>
 </div>
 <div class="steps">
-<article class="step">
+<article class="step" data-reveal>
 <div class="step-number" aria-hidden="true">1</div>
-<h3>Paste a link</h3>
-<p>Give us a public Steam Workshop URL or item ID.</p>
+<h3>Paste</h3>
+<p>Give the baker a public Workshop link or item ID.</p>
 </article>
-<article class="step">
+<article class="step" data-reveal>
 <div class="step-number" aria-hidden="true">2</div>
-<h3>Let it bake</h3>
-<p>CS2FOW downloads the item and creates its visibility files.</p>
+<h3>Bake</h3>
+<p>CS2FOW downloads the map and builds its visibility data.</p>
 </article>
-<article class="step">
+<article class="step" data-reveal>
 <div class="step-number" aria-hidden="true">3</div>
-<h3>Download the ZIP</h3>
-<p>Drop the result into your server's CS2FOW add-on folder.</p>
+<h3>Download</h3>
+<p>Install the finished ZIP in your server's CS2FOW add-on folder.</p>
 </article>
 </div>
 </section>
 
-<section class="section" aria-labelledby="details-heading">
-<div class="section-heading">
-<p class="eyebrow">What you get</p>
-<h2 id="details-heading">Only the files CS2FOW needs.</h2>
+<section class="essentials" aria-labelledby="essentials-heading" data-reveal>
+<div class="essentials-heading">
+<h2 id="essentials-heading">Only what you need.</h2>
+<p>Predictable queueing, short-lived results, and no Workshop files in the final package.</p>
 </div>
-<div class="info-grid">
-<article class="info-card">
-<strong>Visibility data</strong>
-<p>The ZIP contains the baked <code>.bvh8</code> and matching <code>.json</code> files.</p>
-</article>
-<article class="info-card">
-<strong>One active bake</strong>
-<p>One map is processed at a time so the baker stays predictable.</p>
-</article>
-<article class="info-card">
-<strong>Two waiting spots</strong>
-<p>By default, two more jobs can wait while one map is baking.</p>
-</article>
-<article class="info-card">
-<strong>Short-lived results</strong>
-<p>Downloads are kept for two hours, then cleaned up automatically.</p>
-</article>
+<div class="metrics" aria-label="Service limits and output">
+<div class="metric"><strong><code>.bvh8 + .json</code></strong><span>Visibility output</span></div>
+<div class="metric"><strong>One active job</strong><span>One map bakes at a time</span></div>
+<div class="metric"><strong>Two waiting jobs</strong><span>Two more jobs may queue</span></div>
+<div class="metric"><strong>Two-hour expiry</strong><span>Results clean themselves up</span></div>
 </div>
 </section>
-""")
+</div>
+""", page_class="home-page")
 
 
 def status_timeline(state: str) -> str:
@@ -473,7 +180,14 @@ def job_page(job: Job) -> bytes:
 		"done": "Ready",
 		"failed": "Failed",
 	}
+	headings = {
+		"queued": "Your map is in line.",
+		"running": "Building visibility data.",
+		"done": "Your map is ready.",
+		"failed": "This bake didn't finish.",
+	}
 	label = labels.get(job.state, "Unknown")
+	heading = headings.get(job.state, "Checking this bake.")
 	status_class = {
 		"queued": "waiting",
 		"running": "baking",
@@ -483,34 +197,62 @@ def job_page(job: Job) -> bytes:
 	message_role = "alert" if job.state == "failed" else "status"
 	message = html.escape(job.message)
 	body = [
-		'<section class="card job-card" aria-labelledby="job-heading">',
-		'<div class="job-heading">',
-		'<div>',
-		'<p class="eyebrow">Bake job</p>',
-		f'<h1 id="job-heading">{html.escape(label)}</h1>',
+		'<section class="status-stage" aria-labelledby="job-heading">',
+		mesh_backdrop(),
+		'<div class="status-content">',
+		f'<div class="status-chip" role="status"><span class="status-dot" aria-hidden="true"></span>{html.escape(label)}</div>',
+		f'<h1 id="job-heading">{html.escape(heading)}</h1>',
 		f'<p class="job-id">Workshop item <code>{html.escape(job.workshop_id)}</code></p>',
-		"</div>",
-		f'<span class="status-badge {status_class}" role="status">{html.escape(label)}</span>',
-		"</div>",
 		status_timeline(job.state),
+		f'<div class="job-message" role="{message_role}" aria-live="polite">{message}</div>',
 	]
 	if job.state == "done" and job.download_name:
 		body.append(f"""
-<div class="download-card">
+<div class="download-panel">
 <div>
-<p class="eyebrow">Ready to download</p>
-<h3>Your CS2FOW package is ready.</h3>
-<div class="result" role="status" aria-live="polite">{message}</div>
+<h2>Your CS2FOW package</h2>
 <p>The ZIP contains the baked <code>.bvh8</code> and <code>.json</code> files.</p>
 </div>
-<a class="button" href="/download/{html.escape(job.download_name, quote=True)}">Download ZIP <span aria-hidden="true">↓</span></a>
+<a class="download-button" href="/download/{html.escape(job.download_name, quote=True)}">Download ZIP <span aria-hidden="true">&darr;</span></a>
 </div>
 """)
-	else:
-		body.append(f'<div class="result" role="{message_role}" aria-live="polite">{message}</div>')
-	body.append('<a class="job-back" href="/">← Bake another map</a>')
-	body.append("</section>")
-	return page("\n".join(body), refresh=job.state in {"queued", "running"})
+	body.append('<a class="secondary-link" href="/"><span aria-hidden="true">&larr;</span> Bake another map</a>')
+	body.extend(("</div>", "</section>"))
+	return page(
+		"\n".join(body),
+		refresh=job.state in {"queued", "running"},
+		title=f"{label} - CS2FOW Map Baker",
+		page_class=f"job-page state-{status_class}",
+	)
+
+
+def error_page(status: int, message: str) -> bytes:
+	heading = "That page isn't here." if status == 404 else "The baker hit a problem."
+	return page(f"""
+<section class="error-stage" aria-labelledby="error-heading">
+{mesh_backdrop()}
+<div class="error-content">
+<p class="eyebrow">Error {status}</p>
+<h1 id="error-heading">{html.escape(heading)}</h1>
+<p role="alert">{html.escape(message)}</p>
+<a class="primary-button" href="/">Return to the baker</a>
+</div>
+</section>
+""", title=f"Error {status} - CS2FOW Map Baker", page_class="error-page")
+
+
+def submitted_page(location: str) -> bytes:
+	return page(f"""
+<section class="submitted-stage" aria-labelledby="submitted-heading">
+{mesh_backdrop()}
+<div class="submitted-content">
+<p class="eyebrow">Bake submitted</p>
+<h1 id="submitted-heading">Your map is in line.</h1>
+<p>Continue to your bake job to see its current state.</p>
+<a class="primary-button" href="{html.escape(location, quote=True)}">View bake job</a>
+</div>
+</section>
+""", title="Submitted - CS2FOW Map Baker", page_class="submitted-page")
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -528,7 +270,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
 			self.wfile.write(content)
 
 	def send_page_error(self, status: int, message: str, head: bool = False) -> None:
-		self.send_html(home(message), status, head)
+		self.send_html(error_page(status, message), status, head)
+
+	def send_form_error(self, status: int, message: str) -> None:
+		self.send_html(home(message), status)
+
+	def serve_asset(self, request_path: str, head: bool) -> bool:
+		asset = STATIC_FILES.get(request_path)
+		if asset is None:
+			return False
+		filename, content_type = asset
+		path = STATIC_ROOT / filename
+		try:
+			size = path.stat().st_size
+			self.send_response(200)
+			self.send_header("Content-Type", content_type)
+			self.send_header("Content-Length", str(size))
+			self.send_header("Cache-Control", "public, max-age=3600")
+			self.send_header("X-Content-Type-Options", "nosniff")
+			self.end_headers()
+			if not head:
+				with path.open("rb") as stream:
+					shutil.copyfileobj(stream, self.wfile)
+		except OSError:
+			if not self.wfile.closed:
+				self.close_connection = True
+		return True
 
 	def serve_download(self, name: str, head: bool) -> None:
 		if not DOWNLOAD_RE.fullmatch(name) or Path(name).name != name:
@@ -554,6 +321,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 	def serve_get(self, head: bool) -> None:
 		path = urlparse(self.path).path
+		if self.serve_asset(path, head):
+			return
 		if path in {"/", "/bake"}:
 			self.send_html(home(), head=head)
 			return
@@ -583,40 +352,33 @@ class Handler(http.server.BaseHTTPRequestHandler):
 		try:
 			length = int(self.headers.get("Content-Length", ""))
 		except ValueError:
-			self.send_page_error(400, "The submitted form was invalid.")
+			self.send_form_error(400, "The submitted form was invalid.")
 			return
 		if length < 0:
-			self.send_page_error(400, "The submitted form was invalid.")
+			self.send_form_error(400, "The submitted form was invalid.")
 			return
 		if length > MAX_FORM_BYTES:
-			self.send_page_error(413, "The submitted form was too large.")
+			self.send_form_error(413, "The submitted form was too large.")
 			return
 		try:
 			form = parse_qs(self.rfile.read(length).decode("utf-8"), keep_blank_values=True)
 			value = form.get("workshop", [""])[0]
 			job, _created = self.manager.submit(value)
 		except UnicodeDecodeError:
-			self.send_page_error(400, "The submitted form was invalid.")
+			self.send_form_error(400, "The submitted form was invalid.")
 			return
 		except QueueFull as error:
-			self.send_page_error(429, str(error))
+			self.send_form_error(429, str(error))
 			return
 		except BakeError as error:
-			self.send_page_error(400, str(error))
+			self.send_form_error(400, str(error))
 			return
 		except Exception as error:
 			print(f"Unexpected request failure: {error!r}", flush=True)
-			self.send_page_error(500, "The server could not start that bake.")
+			self.send_form_error(500, "The server could not start that bake.")
 			return
 		location = f"/jobs/{job.id}"
-		location_html = html.escape(location, quote=True)
-		self.send_html(page(f"""
-<section class="card narrow-card">
-<p class="eyebrow">Bake submitted</p>
-<h1>Your job is in the queue.</h1>
-<p>Continue to <a href="{location_html}">your bake job</a> to see its status.</p>
-</section>
-"""), 303, extra_headers={"Location": location})
+		self.send_html(submitted_page(location), 303, extra_headers={"Location": location})
 
 
 def serve() -> None:
@@ -624,7 +386,7 @@ def serve() -> None:
 	manager = BakeManager()
 	Handler.manager = manager
 	server = http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler)
-	print(f"CS2FOW Bake Service listening on port {port}", flush=True)
+	print(f"CS2FOW Map Baker listening on port {port}", flush=True)
 	try:
 		server.serve_forever()
 	finally:

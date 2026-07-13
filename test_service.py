@@ -330,29 +330,34 @@ class HttpTests(unittest.TestCase):
 		self.assertEqual(status, 200)
 		page = body.decode("utf-8")
 		for text in (
-			"CS2FOW",
-			"Make a Workshop map ready for CS2FOW.",
+			"CS2FOW Map Baker",
+			"Workshop map",
+			"visibility data",
+			"Bake your map",
+			"for CS2FOW.",
 			"Workshop link or item ID",
-			"How it works",
-			"bvh8",
-			"json",
-			"One active bake",
-			"Two waiting spots",
-			"two hours",
+			"Paste. Bake. Install.",
+			".bvh8 + .json",
+			"One active job",
+			"Two waiting jobs",
+			"Two-hour expiry",
 		):
 			with self.subTest(text=text):
 				self.assertIn(text, page)
-		self.assertIn('aria-labelledby="bake-heading"', page)
-		self.assertIn('id="how-it-works"', page)
-		self.assertIn("aria-label=\"Service features\"", page)
+		self.assertIn('action="/bake"', page)
+		self.assertIn('for="workshop"', page)
+		self.assertIn('src="/assets/scan_cbbl.webp"', page)
+		self.assertIn('href="/assets/site.css"', page)
+		self.assertIn('src="/assets/site.js"', page)
+		self.assertIn('href="https://github.com/karola3vax/CS2FOW"', page)
 
 	def test_job_states_use_shared_layout_refresh_and_escaped_text(self) -> None:
 		download_name = f"cs2fow-3349182536-{'a' * 32}.zip"
-		for state, label in (
-			("queued", "Waiting"),
-			("running", "Baking"),
-			("done", "Ready"),
-			("failed", "Failed"),
+		for state, label, heading in (
+			("queued", "Waiting", "Your map is in line."),
+			("running", "Baking", "Building visibility data."),
+			("done", "Ready", "Your map is ready."),
+			("failed", "Failed", "This bake didn&#x27;t finish."),
 		):
 			with self.subTest(state=state):
 				job = bake.Job(
@@ -363,8 +368,9 @@ class HttpTests(unittest.TestCase):
 					download_name=download_name if state == "done" else "",
 				)
 				page = app.job_page(job).decode("utf-8")
-				self.assertIn("CS2FOW", page)
+				self.assertIn("CS2FOW Map Baker", page)
 				self.assertIn(label, page)
+				self.assertIn(heading, page)
 				self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", page)
 				self.assertNotIn("<script>alert(1)</script>", page)
 				self.assertIn('aria-label="Bake progress"', page)
@@ -421,10 +427,41 @@ class HttpTests(unittest.TestCase):
 		self.assertNotIn("<bad input>", page)
 
 	def test_unknown_paths_do_not_expose_files(self) -> None:
-		for path in ("/jobs/not-a-job", "/download/../secret.zip", "/unknown"):
+		for path in (
+			"/jobs/not-a-job",
+			"/download/../secret.zip",
+			"/unknown",
+			"/assets/missing.css",
+			"/assets/../app.py",
+			"/assets/%2e%2e/app.py",
+		):
 			with self.subTest(path=path):
 				status, _headers, _body = self.request("GET", path)
 				self.assertEqual(status, 404)
+
+	def test_static_assets_are_allowlisted_and_support_head(self) -> None:
+		status, headers, body = self.request("GET", "/assets/site.css")
+		self.assertEqual(status, 200)
+		self.assertEqual(headers["Content-Type"], "text/css; charset=utf-8")
+		self.assertEqual(headers["Content-Length"], str(len(body)))
+		self.assertIn("public", headers["Cache-Control"])
+		self.assertIn(b"--red", body)
+		self.assertIn(b".bake-form", body)
+		self.assertIn(b"background: #fff", body)
+		self.assertIn(b"height: auto", body)
+
+		status, headers, body = self.request("HEAD", "/assets/site.js")
+		self.assertEqual(status, 200)
+		self.assertEqual(headers["Content-Type"], "text/javascript; charset=utf-8")
+		self.assertGreater(int(headers["Content-Length"]), 0)
+		self.assertEqual(body, b"")
+
+		status, headers, body = self.request("GET", "/assets/scan_cbbl.webp")
+		self.assertEqual(status, 200)
+		self.assertEqual(headers["Content-Type"], "image/webp")
+		self.assertLess(len(body), 350 * 1024)
+		self.assertEqual(body[:4], b"RIFF")
+		self.assertEqual(body[8:12], b"WEBP")
 
 	def test_direct_download_link_expires(self) -> None:
 		name = f"cs2fow-3349182536-{'c' * 32}.zip"
@@ -456,6 +493,7 @@ class DockerfileTests(unittest.TestCase):
 		self.assertNotIn("ARG CS2FOW_ARCHIVE_URL", text)
 		self.assertNotIn("ARG CS2FOW_SHA256", text)
 		self.assertNotIn("A812B1A970F50A986B5B9A549407C8793", text)
+		self.assertIn("COPY static ./static", text)
 
 
 if __name__ == "__main__":

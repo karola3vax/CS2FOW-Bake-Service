@@ -36,6 +36,7 @@ RUN curl -fsSL -o /tmp/cs2fow.zip "$CS2FOW_RELEASE_URL" \
 
 WORKDIR /app
 COPY app.py bake.py test_service.py README.md Dockerfile ./
+COPY static ./static
 RUN python -m unittest -q test_service.py \
 	&& useradd --create-home --uid 10001 --shell /usr/sbin/nologin cs2fow \
 	&& mkdir -p "$RESULTS_DIR" \

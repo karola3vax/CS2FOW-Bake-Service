@@ -1,6 +1,6 @@
-# CS2FOW Bake Service
+# CS2FOW Map Baker
 
-This small website turns a Counter-Strike 2 Workshop map into files that CS2FOW can read.
+This small website turns a Counter-Strike 2 Workshop map into files that CS2FOW can read. Its light, dependency-free frontend is served directly by the Python service; baking behavior remains separate and unchanged.
 
 The visitor pastes a Workshop link or item ID. The service downloads the map with SteamCMD, gives its VPK directly to the CS2FOW C++ baker, and returns a ZIP containing only:
 

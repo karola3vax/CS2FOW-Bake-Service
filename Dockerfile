@@ -35,7 +35,7 @@ RUN curl -fsSL -o /tmp/cs2fow.zip "$CS2FOW_ARCHIVE_URL" \
 	&& chmod +x /opt/cs2fow/tools/cs2fow_baker /opt/cs2fow/tools/vrf/linux64/Source2Viewer-CLI
 
 WORKDIR /app
-COPY app.py bake.py test_service.py README.md ./
+COPY app.py bake.py test_service.py README.md Dockerfile ./
 RUN python -m unittest -q test_service.py \
 	&& useradd --create-home --uid 10001 --shell /usr/sbin/nologin cs2fow \
 	&& mkdir -p "$RESULTS_DIR" \

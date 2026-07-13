@@ -27,16 +27,13 @@ The tests use fake bake commands. They do not download Steam content.
 
 ## Build the container
 
-The image requires the URL and exact SHA-256 checksum of a CS2FOW Linux package. There is no default release URL: provide both values so an absent or replaced package cannot silently enter the service image.
+The image defaults to the CS2FOW `0.2.0-preview` Linux package and verifies its exact SHA-256 checksum.
 
 ```sh
-docker build \
-  --build-arg CS2FOW_ARCHIVE_URL=<url> \
-  --build-arg CS2FOW_SHA256=<archive-sha256> \
-  -t cs2fow-bake-service .
+docker build -t cs2fow-bake-service .
 ```
 
-For Render, set `CS2FOW_ARCHIVE_URL` and `CS2FOW_SHA256` in the service environment before building. Render makes those values available as Docker build arguments, as described in its [Docker documentation](https://render.com/docs/docker). Mount a persistent disk at `/var/lib/cs2fow-results` if completed downloads must survive a service restart.
+To use another package, override both `CS2FOW_RELEASE_URL` and `CS2FOW_RELEASE_SHA256` as Docker build arguments. Render may provide those overrides through its environment, as described in its [Docker documentation](https://render.com/docs/docker). Mount a persistent disk at `/var/lib/cs2fow-results` if completed downloads must survive a service restart.
 
 ```sh
 docker run --rm -p 7860:7860 cs2fow-bake-service

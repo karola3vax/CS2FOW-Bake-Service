@@ -439,14 +439,22 @@ class HttpTests(unittest.TestCase):
 
 
 class DockerfileTests(unittest.TestCase):
-	def test_archive_url_and_checksum_are_explicit(self) -> None:
+	def test_archive_url_and_checksum_are_pinned(self) -> None:
 		text = Path(__file__).with_name("Dockerfile").read_text(encoding="utf-8")
-		self.assertIn("ARG CS2FOW_ARCHIVE_URL\n", text)
-		self.assertIn("ARG CS2FOW_SHA256\n", text)
-		self.assertIn("CS2FOW_ARCHIVE_URL build argument is required", text)
-		self.assertIn("CS2FOW_SHA256 build argument is required", text)
-		self.assertLess(text.index("CS2FOW_ARCHIVE_URL build argument is required"), text.index("apt-get update"))
-		self.assertNotIn("releases/download", text)
+		self.assertIn(
+			"ARG CS2FOW_RELEASE_URL=https://github.com/karola3vax/CS2FOW/releases/download/"
+			"v0.2.0-preview/cs2fow-0.2.0-preview-linux-x86_64.zip\n",
+			text,
+		)
+		self.assertIn(
+			"ARG CS2FOW_RELEASE_SHA256=891eef9bf395507fada3b13e37ae4ffff7c7c81557c39e9e93424b205b435137\n",
+			text,
+		)
+		self.assertIn("CS2FOW_RELEASE_URL build argument is required", text)
+		self.assertIn("CS2FOW_RELEASE_SHA256 build argument is required", text)
+		self.assertLess(text.index("CS2FOW_RELEASE_URL build argument is required"), text.index("apt-get update"))
+		self.assertNotIn("ARG CS2FOW_ARCHIVE_URL", text)
+		self.assertNotIn("ARG CS2FOW_SHA256", text)
 		self.assertNotIn("A812B1A970F50A986B5B9A549407C8793", text)
 
 

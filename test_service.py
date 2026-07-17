@@ -480,11 +480,11 @@ class DockerfileTests(unittest.TestCase):
 		text = Path(__file__).with_name("Dockerfile").read_text(encoding="utf-8")
 		self.assertIn(
 			"ARG CS2FOW_RELEASE_URL=https://github.com/karola3vax/CS2FOW/releases/download/"
-			"v0.2.1-preview/cs2fow-0.2.1-preview-linux-x86_64.zip\n",
+			"v0.2.3-preview/cs2fow-0.2.3-preview-linux-x86_64.zip\n",
 			text,
 		)
 		self.assertIn(
-			"ARG CS2FOW_RELEASE_SHA256=3b0d29e0fb71f2d8051f29ef970af31a364a2b1bfbff0579275bf01f287ba5ab\n",
+			"ARG CS2FOW_RELEASE_SHA256=0c8c5a8413eb62559670a3fca575cf229a3fa10846274b7d48db46ed5f8a6143\n",
 			text,
 		)
 		self.assertIn("CS2FOW_RELEASE_URL build argument is required", text)

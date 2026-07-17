@@ -1,7 +1,7 @@
 FROM python:3.11-slim-bookworm
 
-ARG CS2FOW_RELEASE_URL=https://github.com/karola3vax/CS2FOW/releases/download/v0.2.1-preview/cs2fow-0.2.1-preview-linux-x86_64.zip
-ARG CS2FOW_RELEASE_SHA256=3b0d29e0fb71f2d8051f29ef970af31a364a2b1bfbff0579275bf01f287ba5ab
+ARG CS2FOW_RELEASE_URL=https://github.com/karola3vax/CS2FOW/releases/download/v0.2.3-preview/cs2fow-0.2.3-preview-linux-x86_64.zip
+ARG CS2FOW_RELEASE_SHA256=0c8c5a8413eb62559670a3fca575cf229a3fa10846274b7d48db46ed5f8a6143
 RUN if [ -z "$CS2FOW_RELEASE_URL" ]; then echo >&2 "CS2FOW_RELEASE_URL build argument is required"; exit 1; fi \
 	&& if [ -z "$CS2FOW_RELEASE_SHA256" ]; then echo >&2 "CS2FOW_RELEASE_SHA256 build argument is required"; exit 1; fi
 
